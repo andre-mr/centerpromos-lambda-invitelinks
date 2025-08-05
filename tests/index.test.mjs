@@ -23,13 +23,13 @@ jest.mock("@aws-sdk/lib-dynamodb", () => {
 });
 
 const credentials = {
-  accessKeyId: process.env.AMAZON_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AMAZON_SECRET_ACCESS_KEY,
+  AMAZON_ACCESS_KEY_ID: process.env.AMAZON_ACCESS_KEY_ID,
+  AMAZON_SECRET_ACCESS_KEY: process.env.AMAZON_SECRET_ACCESS_KEY,
+  AMAZON_DYNAMODB_TABLE: process.env.AMAZON_DYNAMODB_TABLE,
 };
 
 describe("Lambda Handler Tests", () => {
   beforeEach(() => {
-    process.env.AMAZON_REGION = process.env.AMAZON_REGION;
     process.env.AMAZON_DYNAMODB_TABLE = process.env.AMAZON_DYNAMODB_TABLE;
     jest.clearAllMocks();
   });
@@ -56,25 +56,13 @@ describe("Lambda Handler Tests", () => {
     expect(response.body).toBe("");
   });
 
-  test("should handle missing AMAZON_REGION", async () => {
-    delete process.env.AMAZON_REGION;
-    const mockEvent = {
-      credentials,
-      rawPath: "/testcampaign",
-    };
-    const response = await handler(mockEvent);
-    expect(response.statusCode).toBe(500);
-    expect(response.headers["Content-Type"]).toBe("text/html");
-    expect(response.body).toContain("<title>Erro no servidor</title>");
-    expect(response.body).toContain("Ops! Algo deu errado");
-  });
-
   test("should handle missing AMAZON_DYNAMODB_TABLE", async () => {
     delete process.env.AMAZON_DYNAMODB_TABLE;
     const mockEvent = {
       credentials,
       rawPath: "/testcampaign",
     };
+    delete mockEvent.credentials.AMAZON_DYNAMODB_TABLE;
     const response = await handler(mockEvent);
     expect(response.statusCode).toBe(500);
     expect(response.headers["Content-Type"]).toBe("text/html");

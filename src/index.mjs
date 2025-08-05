@@ -12,7 +12,7 @@ const loadTemplate = async (templateName) => {
     const templatePath = path.join(__dirname, `${templateName}.html`);
     return await fs.readFile(templatePath, "utf8");
   } catch (err) {
-    console.error(`Erro ao carregar template ${templateName}:`);
+    console.error(`Error loading template ${templateName}:`);
     return `<html><body><h1>Erro ${templateName === "404" ? "Não Encontrado" : "Interno"}</h1></body></html>`;
   }
 };

@@ -5,35 +5,29 @@ let docClient = null;
 let AMAZON_DYNAMODB_TABLE = null;
 
 export const initializeClient = (event = {}) => {
-  if (!process.env.AMAZON_REGION) {
-    throw new Error("AMAZON_REGION is required");
+  const { AMAZON_ACCESS_KEY_ID, AMAZON_SECRET_ACCESS_KEY, AMAZON_DYNAMODB_TABLE: eventTable } = event.credentials || {};
+
+  AMAZON_DYNAMODB_TABLE = eventTable || process.env.AMAZON_DYNAMODB_TABLE;
+
+  const ddbClientOptions = {};
+
+  if (process.env.AMAZON_REGION) {
+    ddbClientOptions.region = process.env.AMAZON_REGION;
   }
-
-  if (!process.env.AMAZON_DYNAMODB_TABLE) {
-    throw new Error("AMAZON_DYNAMODB_TABLE is required");
-  }
-
-  AMAZON_DYNAMODB_TABLE = process.env.AMAZON_DYNAMODB_TABLE;
-
-  const config = {
-    region: process.env.AMAZON_REGION,
-  };
-
-  if (event.credentials) {
-    config.credentials = {
-      accessKeyId: event.credentials.accessKeyId,
-      secretAccessKey: event.credentials.secretAccessKey,
+  if (AMAZON_ACCESS_KEY_ID && AMAZON_SECRET_ACCESS_KEY) {
+    ddbClientOptions.credentials = {
+      accessKeyId: AMAZON_ACCESS_KEY_ID,
+      secretAccessKey: AMAZON_SECRET_ACCESS_KEY,
     };
   }
 
-  const client = new DynamoDBClient(config);
-  docClient = DynamoDBDocumentClient.from(client);
+  const ddbClient = new DynamoDBClient(ddbClientOptions);
+  docClient = DynamoDBDocumentClient.from(ddbClient);
 };
 
 export const getInviteLink = async (event = {}) => {
   initializeClient(event);
 
-  // Extrai o path da requisição
   let path = null;
   if (event.rawEvent?.rawPath) {
     path = event.rawEvent.rawPath;
@@ -45,22 +39,18 @@ export const getInviteLink = async (event = {}) => {
     path = event.requestContext.http.path;
   }
 
-  // Se não houver path ou for raiz, retorna null
   if (!path || path === "/") {
     return null;
   }
 
-  // Remove barra inicial e divide em fragmentos
   const fragments = path.replace(/^\//, "").split("/");
   const campaign = fragments[0]?.toUpperCase();
   const category = fragments[1]?.toUpperCase();
 
-  // Se não houver campaign, retorna null
   if (!campaign) {
     return null;
   }
 
-  // Monta a sort key (SK)
   const sortKey = category ? `${campaign}#${category}` : campaign;
 
   const params = {
