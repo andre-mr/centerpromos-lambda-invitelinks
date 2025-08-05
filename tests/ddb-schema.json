@@ -1,0 +1,14 @@
+[
+  {
+    "PK": "WHATSAPP#INVITELINKS",
+    "SK": "CAMPAIGN1#CATEGORY1",
+    "AccountSK": "ACCOUNTNAME",
+    "CampaignName": "Campaign 1",
+    "Category": "Category 1",
+    "InviteCodes": [
+      "111111111111111111@g.us|Test Group 1|xpto1xpto",
+      "222222222222222222@g.us|Test Group 2|xpto2xpto"
+    ],
+    "Updated": "2025-01-01T00:00:00.001Z"
+  }
+]

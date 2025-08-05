@@ -1,0 +1,98 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+
+let docClient = null;
+let AMAZON_DYNAMODB_TABLE = null;
+
+export const initializeClient = (event = {}) => {
+  if (!process.env.AMAZON_REGION) {
+    throw new Error("AMAZON_REGION is required");
+  }
+
+  if (!process.env.AMAZON_DYNAMODB_TABLE) {
+    throw new Error("AMAZON_DYNAMODB_TABLE is required");
+  }
+
+  AMAZON_DYNAMODB_TABLE = process.env.AMAZON_DYNAMODB_TABLE;
+
+  const config = {
+    region: process.env.AMAZON_REGION,
+  };
+
+  if (event.credentials) {
+    config.credentials = {
+      accessKeyId: event.credentials.accessKeyId,
+      secretAccessKey: event.credentials.secretAccessKey,
+    };
+  }
+
+  const client = new DynamoDBClient(config);
+  docClient = DynamoDBDocumentClient.from(client);
+};
+
+export const getInviteLink = async (event = {}) => {
+  initializeClient(event);
+
+  // Extrai o path da requisição
+  let path = null;
+  if (event.rawEvent?.rawPath) {
+    path = event.rawEvent.rawPath;
+  } else if (event.rawEvent?.requestContext?.http?.path) {
+    path = event.rawEvent.requestContext.http.path;
+  } else if (event.rawPath) {
+    path = event.rawPath;
+  } else if (event.requestContext?.http?.path) {
+    path = event.requestContext.http.path;
+  }
+
+  // Se não houver path ou for raiz, retorna null
+  if (!path || path === "/") {
+    return null;
+  }
+
+  // Remove barra inicial e divide em fragmentos
+  const fragments = path.replace(/^\//, "").split("/");
+  const campaign = fragments[0]?.toUpperCase();
+  const category = fragments[1]?.toUpperCase();
+
+  // Se não houver campaign, retorna null
+  if (!campaign) {
+    return null;
+  }
+
+  // Monta a sort key (SK)
+  const sortKey = category ? `${campaign}#${category}` : campaign;
+
+  const params = {
+    TableName: AMAZON_DYNAMODB_TABLE,
+    Key: {
+      PK: "WHATSAPP#INVITELINKS",
+      SK: sortKey,
+    },
+  };
+
+  try {
+    const result = await docClient.send(new GetCommand(params));
+
+    if (result.Item?.InviteCodes?.length) {
+      const updatedTime = result.Item.Updated ? new Date(result.Item.Updated) : null;
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+      let inviteCode;
+      if (updatedTime && updatedTime < twoHoursAgo) {
+        const randomIndex = Math.floor(Math.random() * result.Item.InviteCodes.length);
+        inviteCode = result.Item.InviteCodes[randomIndex];
+      } else {
+        inviteCode = result.Item.InviteCodes[0];
+      }
+
+      const parts = inviteCode.split("|");
+      return parts.length >= 3 ? parts[2] : null;
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`Error getting invite link for campaign ${campaign}${category ? "#" + category : ""}`);
+    throw error;
+  }
+};
