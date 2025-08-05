@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           echo "Debug: Creating matrix..."
-          NAMES="${{ secrets.AMAZON_LAMBDA_FUNCTION_NAMES }}"
+          NAMES="${{ vars.AMAZON_LAMBDA_FUNCTION_NAMES }}"
 
           # Split the names and create a JSON array manually
           IFS='|' read -ra FUNCTIONS <<< "$NAMES"
