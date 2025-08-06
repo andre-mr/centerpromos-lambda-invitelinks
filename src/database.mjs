@@ -25,7 +25,7 @@ export const initializeClient = (event = {}) => {
   docClient = DynamoDBDocumentClient.from(ddbClient);
 };
 
-export const getInviteLink = async (event = {}) => {
+export const getInviteCode = async (event = {}) => {
   initializeClient(event);
 
   let path = null;

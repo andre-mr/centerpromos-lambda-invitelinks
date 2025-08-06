@@ -1,4 +1,4 @@
-import { getInviteLink } from "./database.mjs";
+import { getInviteCode } from "./database.mjs";
 
 const loadTemplate = async (templateName) => {
   try {
@@ -19,7 +19,7 @@ const loadTemplate = async (templateName) => {
 
 export const handler = async (event) => {
   try {
-    const inviteCode = await getInviteLink(event);
+    const inviteCode = await getInviteCode(event);
 
     if (!inviteCode) {
       const template404 = await loadTemplate("404");
