@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 let docClient = null;
 let AMAZON_DYNAMODB_TABLE = null;
@@ -23,6 +23,23 @@ export const initializeClient = (event = {}) => {
 
   const ddbClient = new DynamoDBClient(ddbClientOptions);
   docClient = DynamoDBDocumentClient.from(ddbClient);
+};
+
+const incrementClicks = async (sortKey) => {
+  const params = {
+    TableName: AMAZON_DYNAMODB_TABLE,
+    Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
+    UpdateExpression: "SET Clicks = if_not_exists(Clicks, :zero) + :inc",
+    ExpressionAttributeValues: {
+      ":inc": 1,
+      ":zero": 0,
+    },
+  };
+  try {
+    await docClient.send(new UpdateCommand(params));
+  } catch (error) {
+    console.error(`Error incrementing Clicks for sortKey ${sortKey}:`, error);
+  }
 };
 
 export const getInviteCode = async (event = {}) => {
@@ -77,6 +94,8 @@ export const getInviteCode = async (event = {}) => {
       }
 
       const parts = inviteCode.split("|");
+
+      incrementClicks(sortKey);
       return parts.length >= 3 ? parts[2] : null;
     }
 
