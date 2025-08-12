@@ -39,7 +39,6 @@ function getDocClient(event = {}) {
     clientConfig.credentials = { accessKeyId, secretAccessKey };
   }
 
-  console.log("region:", region);
   const client = new DynamoDBClient(clientConfig);
 
   _docClient = DynamoDBDocumentClient.from(client, {
@@ -77,7 +76,6 @@ export async function getInviteCode(event = {}) {
   console.time("[database] getInviteCode total");
 
   const tableName = event.credentials?.AMAZON_DYNAMODB_TABLE || process.env.AMAZON_DYNAMODB_TABLE || null;
-  console.log("tableName:", tableName);
 
   if (!tableName) {
     throw new Error("AMAZON_DYNAMODB_TABLE não definida nas variáveis de ambiente.");
@@ -101,7 +99,6 @@ export async function getInviteCode(event = {}) {
         Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
       })
     );
-    console.log("DynamoDB result:", result);
     console.timeEnd("[database] dynamodb:GetCommand");
 
     const list = result.Item?.InviteCodes;
