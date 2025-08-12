@@ -5,7 +5,19 @@ let docClient = null;
 let AMAZON_DYNAMODB_TABLE = null;
 
 export const initializeClient = (event = {}) => {
-  const { AMAZON_ACCESS_KEY_ID, AMAZON_SECRET_ACCESS_KEY, AMAZON_DYNAMODB_TABLE: eventTable } = event.credentials || {};
+  const {
+    PASSKEY,
+    AMAZON_ACCESS_KEY_ID,
+    AMAZON_SECRET_ACCESS_KEY,
+    AMAZON_DYNAMODB_TABLE: eventTable,
+  } = event.credentials || {};
+
+  if (PASSKEY) {
+    if (PASSKEY !== process.env.PASSKEY) {
+      console.error("Invalid PASSKEY provided in event credentials.");
+      throw new Error("Invalid PASSKEY");
+    }
+  }
 
   AMAZON_DYNAMODB_TABLE = eventTable || process.env.AMAZON_DYNAMODB_TABLE;
 

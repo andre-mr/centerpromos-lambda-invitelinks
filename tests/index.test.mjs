@@ -26,6 +26,7 @@ const credentials = {
   AMAZON_ACCESS_KEY_ID: process.env.AMAZON_ACCESS_KEY_ID,
   AMAZON_SECRET_ACCESS_KEY: process.env.AMAZON_SECRET_ACCESS_KEY,
   AMAZON_DYNAMODB_TABLE: process.env.AMAZON_DYNAMODB_TABLE,
+  PASSKEY: process.env.PASSKEY,
 };
 
 describe("Lambda Handler Tests", () => {
