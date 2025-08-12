@@ -31,6 +31,8 @@ jobs:
           AMAZON_SECRET_ACCESS_KEY: ${{ secrets.AMAZON_SECRET_ACCESS_KEY }}
           AMAZON_REGION: ${{ secrets.AMAZON_REGION }}
           AMAZON_DYNAMODB_TABLE: ${{ secrets.AMAZON_DYNAMODB_TABLE }}
+          TEST_CAMPAIGN: ${{ vars.TEST_CAMPAIGN }}
+          TEST_CATEGORY: ${{ vars.TEST_CATEGORY }}
 
   prepare-matrix:
     needs: test
