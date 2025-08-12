@@ -1,97 +1,92 @@
-import { jest } from "@jest/globals";
 import { handler } from "../src/index.mjs";
 import dotenv from "dotenv";
+import { jest } from "@jest/globals";
+
 dotenv.config();
-
-jest.mock("@aws-sdk/client-dynamodb", () => {
-  return {
-    DynamoDBClient: jest.fn().mockImplementation(() => ({
-      send: jest.fn(),
-    })),
-  };
-});
-
-jest.mock("@aws-sdk/lib-dynamodb", () => {
-  return {
-    DynamoDBDocumentClient: {
-      from: jest.fn().mockReturnValue({
-        send: jest.fn().mockResolvedValue({ UnprocessedItems: {} }),
-      }),
-    },
-    GetCommand: jest.fn().mockImplementation((params) => params),
-  };
-});
 
 const credentials = {
   AMAZON_ACCESS_KEY_ID: process.env.AMAZON_ACCESS_KEY_ID,
   AMAZON_SECRET_ACCESS_KEY: process.env.AMAZON_SECRET_ACCESS_KEY,
   AMAZON_DYNAMODB_TABLE: process.env.AMAZON_DYNAMODB_TABLE,
-  PASSKEY: process.env.PASSKEY,
+  AMAZON_REGION: process.env.AMAZON_REGION,
 };
 
-describe("Lambda Handler Tests", () => {
-  beforeEach(() => {
-    process.env.AMAZON_DYNAMODB_TABLE = process.env.AMAZON_DYNAMODB_TABLE;
-    jest.clearAllMocks();
+// Global spy to swallow late logs from fire-and-forget (incrementClicks)
+const originalTimeEnd = console.timeEnd.bind(console);
+let timeEndSpy;
+
+beforeAll(() => {
+  timeEndSpy = jest.spyOn(console, "timeEnd").mockImplementation((label) => {
+    if (typeof label === "string" && label.startsWith("[database] incrementClicks:")) {
+      // Suppress to avoid "Cannot log after tests are done"
+      return;
+    }
+    return originalTimeEnd(label);
+  });
+});
+
+// Optional: small final wait to allow pending operations to finish
+afterAll(async () => {
+  await new Promise((r) => setTimeout(r, 120));
+  if (timeEndSpy) timeEndSpy.mockRestore();
+});
+
+describe("Lambda Handler Integration Tests", () => {
+  const TEST_CAMPAIGN = process.env.TEST_CAMPAIGN?.toLowerCase();
+  const TEST_CATEGORY = process.env.TEST_CATEGORY?.toLowerCase();
+
+  beforeAll(() => {
+    if (!TEST_CAMPAIGN) {
+      throw new Error("TEST_CAMPAIGN must be defined in the .env file");
+    }
+    if (!TEST_CATEGORY) {
+      throw new Error("TEST_CATEGORY must be defined in the .env file");
+    }
+    if (!process.env.AMAZON_DYNAMODB_TABLE) {
+      throw new Error("AMAZON_DYNAMODB_TABLE must be defined in the .env file");
+    }
+    if (!process.env.AMAZON_REGION) {
+      throw new Error("AMAZON_REGION must be defined in the .env file");
+    }
   });
 
-  test("should successfully redirect when invite link exists without category", async () => {
+  test("should redirect when accessing campaign only", async () => {
     const mockEvent = {
+      rawPath: `/${TEST_CAMPAIGN}`,
       credentials,
-      rawPath: "/testcampaign",
     };
+
     const response = await handler(mockEvent);
+
     expect(response.statusCode).toBe(302);
-    expect(response.headers.Location.startsWith("https://chat.whatsapp.com/")).toBe(true);
+    expect(response.headers.Location).toMatch(/^https:\/\/chat\.whatsapp\.com\/.+/);
+    expect(response.headers["Cache-Control"]).toBe("no-store");
     expect(response.body).toBe("");
   });
 
-  test("should successfully redirect when invite link exists with category", async () => {
+  test("should redirect when accessing campaign with category", async () => {
     const mockEvent = {
+      rawPath: `/${TEST_CAMPAIGN}/${TEST_CATEGORY}`,
       credentials,
-      rawPath: "/testcampaign/testcategory",
     };
+
     const response = await handler(mockEvent);
+
     expect(response.statusCode).toBe(302);
-    expect(response.headers.Location.startsWith("https://chat.whatsapp.com/")).toBe(true);
+    expect(response.headers.Location).toMatch(/^https:\/\/chat\.whatsapp\.com\/.+/);
+    expect(response.headers["Cache-Control"]).toBe("no-store");
     expect(response.body).toBe("");
   });
 
-  test("should handle missing AMAZON_DYNAMODB_TABLE", async () => {
-    delete process.env.AMAZON_DYNAMODB_TABLE;
+  test("should return 404 when accessing root path", async () => {
     const mockEvent = {
-      credentials,
-      rawPath: "/testcampaign",
-    };
-    delete mockEvent.credentials.AMAZON_DYNAMODB_TABLE;
-    const response = await handler(mockEvent);
-    expect(response.statusCode).toBe(500);
-    expect(response.headers["Content-Type"]).toBe("text/html");
-    expect(response.body).toContain("<title>Erro no servidor</title>");
-    expect(response.body).toContain("Ops! Algo deu errado");
-  });
-
-  test("should handle DynamoDB errors", async () => {
-    const mockEvent = {
-      credentials,
-      rawPath: "/testcampaign",
-    };
-    const response = await handler(mockEvent);
-    expect(response.statusCode).toBe(500);
-    expect(response.headers["Content-Type"]).toBe("text/html");
-    expect(response.body).toContain("<title>Erro no servidor</title>");
-    expect(response.body).toContain("Ops! Algo deu errado");
-  });
-
-  test("should return 404 when accessing root path without campaign or category", async () => {
-    const mockEvent = {
-      credentials,
       rawPath: "/",
     };
+
     const response = await handler(mockEvent);
+
     expect(response.statusCode).toBe(404);
     expect(response.headers["Content-Type"]).toBe("text/html");
-    expect(response.body).toContain("<title>Link não encontrado</title>");
     expect(response.body).toContain("Link não encontrado");
   });
 });

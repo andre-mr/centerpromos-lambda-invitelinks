@@ -1,54 +1,82 @@
 import { getInviteCode } from "./database.mjs";
+import { promises as fs } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const loadTemplate = async (templateName) => {
+// Resolve __dirname in ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Simple in-memory cache for templates
+const templateCache = new Map();
+
+async function loadTemplate(templateName) {
+  const key = `${templateName}.html`;
+  if (templateCache.has(key)) return templateCache.get(key);
+
+  console.time(`[index] loadTemplate:${templateName}`);
   try {
-    const { promises: fs } = await import("fs");
-    const { default: path } = await import("path");
-    const { fileURLToPath } = await import("url");
-
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-
-    const templatePath = path.join(__dirname, `${templateName}.html`);
-    return await fs.readFile(templatePath, "utf8");
+    const templatePath = path.join(__dirname, key);
+    const html = await fs.readFile(templatePath, "utf8");
+    templateCache.set(key, html);
+    return html;
   } catch (err) {
-    console.error(`Error loading template ${templateName}:`);
-    return `<html><body><h1>Erro ${templateName === "404" ? "Não Encontrado" : "Interno"}</h1></body></html>`;
+    console.error(`Error loading template ${templateName}:`, err);
+    const fallback = `<html><body><h1>${templateName === "404" ? "Não Encontrado" : "Erro Interno"}</h1></body></html>`;
+    templateCache.set(key, fallback);
+    return fallback;
+  } finally {
+    console.timeEnd(`[index] loadTemplate:${templateName}`);
   }
-};
+}
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  console.time("[index] handler total");
+  // ensures pending tasks (increment) do not hold up the response
+  if (context) context.callbackWaitsForEmptyEventLoop = false;
+
   try {
-    const inviteCode = await getInviteCode(event);
+    console.time("[index] getInviteCode");
+    const result = await getInviteCode(event);
+    console.timeEnd("[index] getInviteCode");
 
-    if (!inviteCode) {
+    if (!result?.inviteCode) {
       const template404 = await loadTemplate("404");
-      return {
+      console.time("[index] response:404");
+      const response = {
         statusCode: 404,
-        headers: {
-          "Content-Type": "text/html",
-        },
+        headers: { "Content-Type": "text/html" },
         body: template404,
       };
+      console.timeEnd("[index] response:404");
+      console.timeEnd("[index] handler total");
+      return response;
     }
 
-    return {
+    console.time("[index] response:302");
+    const response = {
       statusCode: 302,
       headers: {
-        Location: `https://chat.whatsapp.com/${inviteCode}`,
+        Location: `https://chat.whatsapp.com/${result.inviteCode}`,
+        "Cache-Control": "no-store",
       },
       body: "",
     };
+    console.timeEnd("[index] response:302");
+    console.timeEnd("[index] handler total");
+    return response;
   } catch (error) {
-    console.error("Error handling request");
+    console.error("Error handling request:", error);
 
     const template500 = await loadTemplate("500");
-    return {
-      statusCode: error.statusCode || 500,
-      headers: {
-        "Content-Type": "text/html",
-      },
+    console.time("[index] response:500");
+    const response = {
+      statusCode: 500,
+      headers: { "Content-Type": "text/html" },
       body: template500,
     };
+    console.timeEnd("[index] response:500");
+    console.timeEnd("[index] handler total");
+    return response;
   }
 };

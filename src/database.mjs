@@ -1,119 +1,159 @@
+import https from "node:https";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 
-let docClient = null;
-let AMAZON_DYNAMODB_TABLE = null;
+let _docClient = null;
+let _clientConfigKey = null;
 
-export const initializeClient = (event = {}) => {
-  const {
-    PASSKEY,
-    AMAZON_ACCESS_KEY_ID,
-    AMAZON_SECRET_ACCESS_KEY,
-    AMAZON_DYNAMODB_TABLE: eventTable,
-  } = event.credentials || {};
+/** Creates the DocumentClient with keep-alive (recreates if config changes, only once). */
+function getDocClient(event = {}) {
+  const creds = event.credentials || {};
+  const region = creds.AMAZON_REGION || process.env.AMAZON_REGION || "sa-east-1";
+  const accessKeyId = creds.AMAZON_ACCESS_KEY_ID || process.env.AMAZON_ACCESS_KEY_ID;
+  const secretAccessKey = creds.AMAZON_SECRET_ACCESS_KEY || process.env.AMAZON_SECRET_ACCESS_KEY;
 
-  if (PASSKEY) {
-    if (PASSKEY !== process.env.PASSKEY) {
-      console.error("Invalid PASSKEY provided in event credentials.");
-      throw new Error("Invalid PASSKEY");
-    }
-  }
+  const configKey = `${region}|${accessKeyId ? "withCreds" : "noCreds"}`;
+  if (_docClient && _clientConfigKey === configKey) return _docClient;
 
-  AMAZON_DYNAMODB_TABLE = eventTable || process.env.AMAZON_DYNAMODB_TABLE;
+  console.time("[database] initializeClient");
 
-  const ddbClientOptions = {};
+  const httpsAgent = new https.Agent({
+    keepAlive: true,
+    maxSockets: 64,
+    maxFreeSockets: 16,
+    timeout: 30_000,
+  });
 
-  if (process.env.AMAZON_REGION) {
-    ddbClientOptions.region = process.env.AMAZON_REGION;
-  }
-  if (AMAZON_ACCESS_KEY_ID && AMAZON_SECRET_ACCESS_KEY) {
-    ddbClientOptions.credentials = {
-      accessKeyId: AMAZON_ACCESS_KEY_ID,
-      secretAccessKey: AMAZON_SECRET_ACCESS_KEY,
-    };
-  }
-
-  const ddbClient = new DynamoDBClient(ddbClientOptions);
-  docClient = DynamoDBDocumentClient.from(ddbClient);
-};
-
-const incrementClicks = async (sortKey) => {
-  const params = {
-    TableName: AMAZON_DYNAMODB_TABLE,
-    Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
-    UpdateExpression: "SET Clicks = if_not_exists(Clicks, :zero) + :inc",
-    ExpressionAttributeValues: {
-      ":inc": 1,
-      ":zero": 0,
-    },
+  const clientConfig = {
+    region,
+    maxAttempts: 3,
+    requestHandler: new NodeHttpHandler({
+      httpsAgent,
+      connectionTimeout: 200,
+      socketTimeout: 1_500,
+    }),
   };
-  try {
-    await docClient.send(new UpdateCommand(params));
-  } catch (error) {
-    console.error(`Error incrementing Clicks for sortKey ${sortKey}:`, error);
-  }
-};
 
-export const getInviteCode = async (event = {}) => {
-  initializeClient(event);
-
-  let path = null;
-  if (event.rawEvent?.rawPath) {
-    path = event.rawEvent.rawPath;
-  } else if (event.rawEvent?.requestContext?.http?.path) {
-    path = event.rawEvent.requestContext.http.path;
-  } else if (event.rawPath) {
-    path = event.rawPath;
-  } else if (event.requestContext?.http?.path) {
-    path = event.requestContext.http.path;
+  if (accessKeyId && secretAccessKey) {
+    clientConfig.credentials = { accessKeyId, secretAccessKey };
   }
 
-  if (!path || path === "/") {
-    return null;
-  }
+  console.log("region:", region);
+  const client = new DynamoDBClient(clientConfig);
 
-  const fragments = path.replace(/^\//, "").split("/");
-  const campaign = fragments[0]?.toUpperCase();
-  const category = fragments[1]?.toUpperCase();
+  _docClient = DynamoDBDocumentClient.from(client, {
+    marshallOptions: { removeUndefinedValues: true },
+  });
+  _clientConfigKey = configKey;
 
-  if (!campaign) {
-    return null;
-  }
+  console.timeEnd("[database] initializeClient");
+  return _docClient;
+}
+
+/** Extracts campaign/category from the path. */
+function parsePath(event = {}) {
+  let rawPath = null;
+
+  // API Gateway HTTP API (v2) with/without wrapper
+  if (event.rawEvent?.rawPath) rawPath = event.rawEvent.rawPath;
+  else if (event.rawEvent?.requestContext?.http?.path) rawPath = event.rawEvent.requestContext.http.path;
+  else if (event.rawPath) rawPath = event.rawPath;
+  else if (event.requestContext?.http?.path) rawPath = event.requestContext.http.path;
+
+  if (!rawPath || rawPath === "/") return null;
+
+  const [campaignRaw, categoryRaw] = rawPath.replace(/^\//, "").split("/");
+  const campaign = campaignRaw?.toUpperCase();
+  const category = categoryRaw?.toUpperCase();
+  if (!campaign) return null;
 
   const sortKey = category ? `${campaign}#${category}` : campaign;
+  return { campaign, category, sortKey };
+}
 
-  const params = {
-    TableName: AMAZON_DYNAMODB_TABLE,
-    Key: {
-      PK: "WHATSAPP#INVITELINKS",
-      SK: sortKey,
-    },
-  };
+//Fetches the invite from DynamoDB, selects the code, and triggers UPDATE (fire-and-forget).
+export async function getInviteCode(event = {}) {
+  console.time("[database] getInviteCode total");
+
+  const tableName = event.credentials?.AMAZON_DYNAMODB_TABLE || process.env.AMAZON_DYNAMODB_TABLE || null;
+  console.log("tableName:", tableName);
+
+  if (!tableName) {
+    throw new Error("AMAZON_DYNAMODB_TABLE não definida nas variáveis de ambiente.");
+  }
+
+  const parsed = parsePath(event);
+
+  if (!parsed) {
+    console.timeEnd("[database] getInviteCode total");
+    return null;
+  }
+
+  const { sortKey } = parsed;
+  const doc = getDocClient(event);
 
   try {
-    const result = await docClient.send(new GetCommand(params));
+    console.time("[database] dynamodb:GetCommand");
+    const result = await doc.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
+      })
+    );
+    console.log("DynamoDB result:", result);
+    console.timeEnd("[database] dynamodb:GetCommand");
 
-    if (result.Item?.InviteCodes?.length) {
-      const updatedTime = result.Item.Updated ? new Date(result.Item.Updated) : null;
-      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-
-      let inviteCode;
-      if (updatedTime && updatedTime < twoHoursAgo) {
-        const randomIndex = Math.floor(Math.random() * result.Item.InviteCodes.length);
-        inviteCode = result.Item.InviteCodes[randomIndex];
-      } else {
-        inviteCode = result.Item.InviteCodes[0];
-      }
-
-      const parts = inviteCode.split("|");
-
-      incrementClicks(sortKey);
-      return parts.length >= 3 ? parts[2] : null;
+    const list = result.Item?.InviteCodes;
+    if (!Array.isArray(list) || list.length === 0) {
+      console.timeEnd("[database] getInviteCode total");
+      return null;
     }
 
-    return null;
+    console.time("[database] selectInviteCode");
+    const updatedTime = result.Item.Updated ? new Date(result.Item.Updated) : null;
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    let invite = list[0];
+    if (updatedTime && updatedTime < twoHoursAgo) {
+      invite = list[Math.floor(Math.random() * list.length)];
+    }
+
+    const parts = String(invite).split("|");
+    const inviteCode = parts.length >= 3 ? parts[2] : null;
+    console.timeEnd("[database] selectInviteCode");
+
+    if (!inviteCode) {
+      console.timeEnd("[database] getInviteCode total");
+      return null;
+    }
+
+    // ---- ASYNCHRONOUS INCREMENT (fire-and-forget) ----
+    (async () => {
+      const label = `[database] incrementClicks:${sortKey}`;
+      console.time(label);
+      try {
+        await doc.send(
+          new UpdateCommand({
+            TableName: tableName,
+            Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
+            UpdateExpression: "SET Clicks = if_not_exists(Clicks, :zero) + :inc",
+            ExpressionAttributeValues: { ":inc": 1, ":zero": 0 },
+          })
+        );
+      } catch (err) {
+        console.error(`Error incrementing Clicks for ${sortKey}:`, err);
+      } finally {
+        console.timeEnd(label);
+      }
+    })().catch((e) => console.error("increment fire-and-forget error:", e));
+    // --------------------------------------------------
+
+    console.timeEnd("[database] getInviteCode total");
+    return { inviteCode, sortKey };
   } catch (error) {
-    console.error(`Error getting invite link for campaign ${campaign}${category ? "#" + category : ""}`);
+    console.error(`Error getting invite link for ${sortKey}:`, error);
+    console.timeEnd("[database] getInviteCode total");
     throw error;
   }
-};
+}
