@@ -131,7 +131,7 @@ export async function getInviteCode(event = {}) {
     // ---- ASYNCHRONOUS INCREMENT (fire-and-forget) ----
     (async () => {
       const label = `[database] incrementClicks:${sortKey}`;
-      console.time(label);
+      if (!isTestEnv()) console.time(label);
       try {
         await doc.send(
           new UpdateCommand({
@@ -144,7 +144,7 @@ export async function getInviteCode(event = {}) {
       } catch (err) {
         console.error(`Error incrementing Clicks for ${sortKey}:`, err);
       } finally {
-        console.timeEnd(label);
+        if (!isTestEnv()) console.timeEnd(label);
       }
     })().catch((e) => console.error("increment fire-and-forget error:", e));
     // --------------------------------------------------
@@ -156,4 +156,9 @@ export async function getInviteCode(event = {}) {
     console.timeEnd("[database] getInviteCode total");
     throw error;
   }
+}
+
+// Utility to detect test environment
+function isTestEnv() {
+  return process.env.JEST_WORKER_ID !== undefined || process.env.NODE_ENV === "test";
 }

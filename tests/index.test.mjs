@@ -1,6 +1,5 @@
 import { handler } from "../src/index.mjs";
 import dotenv from "dotenv";
-import { jest } from "@jest/globals";
 
 dotenv.config();
 
@@ -10,26 +9,6 @@ const credentials = {
   AMAZON_DYNAMODB_TABLE: process.env.AMAZON_DYNAMODB_TABLE,
   AMAZON_REGION: process.env.AMAZON_REGION,
 };
-
-// Global spy to swallow late logs from fire-and-forget (incrementClicks)
-const originalTimeEnd = console.timeEnd.bind(console);
-let timeEndSpy;
-
-beforeAll(() => {
-  timeEndSpy = jest.spyOn(console, "timeEnd").mockImplementation((label) => {
-    if (typeof label === "string" && label.startsWith("[database] incrementClicks:")) {
-      // Suppress to avoid "Cannot log after tests are done"
-      return;
-    }
-    return originalTimeEnd(label);
-  });
-});
-
-// Optional: small final wait to allow pending operations to finish
-afterAll(async () => {
-  await new Promise((r) => setTimeout(r, 120));
-  if (timeEndSpy) timeEndSpy.mockRestore();
-});
 
 describe("Lambda Handler Integration Tests", () => {
   const TEST_CAMPAIGN = process.env.TEST_CAMPAIGN?.toLowerCase();
