@@ -13,25 +13,34 @@ function getDocClient(event = {}) {
   const accessKeyId = creds.AMAZON_ACCESS_KEY_ID || process.env.AMAZON_ACCESS_KEY_ID;
   const secretAccessKey = creds.AMAZON_SECRET_ACCESS_KEY || process.env.AMAZON_SECRET_ACCESS_KEY;
 
-  const configKey = `${region}|${accessKeyId ? "withCreds" : "noCreds"}`;
+  // Allows tuning without redeploy
+  const envConnTimeout = Number(process.env.DDB_CONN_TIMEOUT_MS) || 800;
+  const envSocketTimeout = Number(process.env.DDB_SOCKET_TIMEOUT_MS) || 1200;
+  const envMaxAttempts = Number(process.env.DDB_MAX_ATTEMPTS) || 2;
+  const envMaxSockets = Number(process.env.DDB_MAX_SOCKETS) || 16;
+
+  const configKey = `${region}|${
+    accessKeyId ? "withCreds" : "noCreds"
+  }|${envConnTimeout}|${envSocketTimeout}|${envMaxAttempts}|${envMaxSockets}`;
   if (_docClient && _clientConfigKey === configKey) return _docClient;
 
   console.time("[database] initializeClient");
 
   const httpsAgent = new https.Agent({
     keepAlive: true,
-    maxSockets: 64,
-    maxFreeSockets: 16,
-    timeout: 30_000,
+    keepAliveMsecs: 60_000, // keep TCP/TLS alive during short periods of inactivity
+    maxSockets: envMaxSockets,
+    maxFreeSockets: Math.min(8, envMaxSockets),
+    timeout: 0, // don't use global agent timeout; rely on socketTimeout in handler
   });
 
   const clientConfig = {
     region,
-    maxAttempts: 3,
+    maxAttempts: envMaxAttempts,
     requestHandler: new NodeHttpHandler({
       httpsAgent,
-      connectionTimeout: 200,
-      socketTimeout: 1_500,
+      connectionTimeout: envConnTimeout,
+      socketTimeout: envSocketTimeout,
     }),
   };
 
@@ -44,13 +53,41 @@ function getDocClient(event = {}) {
   _docClient = DynamoDBDocumentClient.from(client, {
     marshallOptions: { removeUndefinedValues: true },
   });
-  _clientConfigKey = configKey;
 
+  // Simple middleware to log actual attempts (helps validate tuning)
+  _docClient.middlewareStack.add(
+    (next, context) => async (args) => {
+      const t0 = Date.now();
+      try {
+        const out = await next(args);
+        if (out?.$metadata) {
+          console.log(
+            `[database] ${context.commandName} attempts=${out.$metadata.attempts} totalMs=${Date.now() - t0}`
+          );
+        }
+        return out;
+      } catch (err) {
+        const meta = err?.$metadata;
+        console.log(
+          `[database] ${context.commandName} error attempts=${meta?.attempts ?? "?"} totalMs=${Date.now() - t0} name=${
+            err?.name
+          }`
+        );
+        throw err;
+      }
+    },
+    { step: "finalizeRequest", name: "attemptLogger", priority: "low" }
+  );
+
+  _clientConfigKey = configKey;
   console.timeEnd("[database] initializeClient");
   return _docClient;
 }
 
-/** Extracts campaign/category from the path. */
+/** Extracts account/campaign/category from the path.
+   Expected path: /:account/campaign[/category] or /campaign[/category]
+   Returns { account, campaign, category, sortKey } or null if invalid.
+*/
 function parsePath(event = {}) {
   let rawPath = null;
 
@@ -62,30 +99,51 @@ function parsePath(event = {}) {
 
   if (!rawPath || rawPath === "/") return null;
 
-  const [campaignRaw, categoryRaw] = rawPath.replace(/^\//, "").split("/");
-  const campaign = campaignRaw?.toUpperCase();
-  const category = categoryRaw?.toUpperCase();
+  const parts = rawPath.replace(/^\//, "").split("/");
+  const [firstPart, secondPart, thirdPart] = parts;
+
+  let account = null;
+  let campaign = null;
+  let category = null;
+  let sortKey = null;
+
+  if (firstPart && firstPart.startsWith(":")) {
+    account = firstPart.replace(/^:/, "");
+    campaign = secondPart?.toUpperCase();
+    category = thirdPart?.toUpperCase();
+  } else {
+    campaign = firstPart?.toUpperCase();
+    category = secondPart?.toUpperCase();
+  }
+
+  // require at least campaign
   if (!campaign) return null;
 
-  const sortKey = category ? `${campaign}#${category}` : campaign;
-  return { campaign, category, sortKey };
+  sortKey = campaign;
+  if (category) sortKey += `#${category}`;
+
+  return { account, campaign, category, sortKey };
 }
 
 //Fetches the invite from DynamoDB, selects the code, and triggers UPDATE (fire-and-forget).
 export async function getInviteCode(event = {}) {
   console.time("[database] getInviteCode total");
 
-  const tableName = event.credentials?.AMAZON_DYNAMODB_TABLE || process.env.AMAZON_DYNAMODB_TABLE || null;
-
-  if (!tableName) {
-    throw new Error("AMAZON_DYNAMODB_TABLE não definida nas variáveis de ambiente.");
-  }
-
   const parsed = parsePath(event);
-
   if (!parsed) {
     console.timeEnd("[database] getInviteCode total");
     return null;
+  }
+
+  // Table name priority: event.credentials -> parsed.account -> process.env
+  const tableName =
+    (event.credentials && event.credentials.AMAZON_DYNAMODB_TABLE) ||
+    parsed.account ||
+    process.env.AMAZON_DYNAMODB_TABLE ||
+    null;
+
+  if (!tableName) {
+    throw new Error("AMAZON_DYNAMODB_TABLE não definida nas variáveis de ambiente.");
   }
 
   const { sortKey } = parsed;
@@ -93,6 +151,7 @@ export async function getInviteCode(event = {}) {
 
   try {
     console.time("[database] dynamodb:GetCommand");
+    console.log("tableName, sortKey:", tableName, sortKey);
     const result = await doc.send(
       new GetCommand({
         TableName: tableName,
@@ -125,26 +184,24 @@ export async function getInviteCode(event = {}) {
       return null;
     }
 
-    // ---- ASYNCHRONOUS INCREMENT (fire-and-forget) ----
-    (async () => {
-      const label = `[database] incrementClicks:${sortKey}`;
-      if (!isTestEnv()) console.time(label);
-      try {
-        await doc.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
-            UpdateExpression: "SET Clicks = if_not_exists(Clicks, :zero) + :inc",
-            ExpressionAttributeValues: { ":inc": 1, ":zero": 0 },
-          })
-        );
-      } catch (err) {
-        console.error(`Error incrementing Clicks for ${sortKey}:`, err);
-      } finally {
-        if (!isTestEnv()) console.timeEnd(label);
-      }
-    })().catch((e) => console.error("increment fire-and-forget error:", e));
-    // --------------------------------------------------
+    // ---- SYNCHRONOUS INCREMENT (used to be fire-and-forget) ----
+    const label = `[database] incrementClicks:${sortKey}`;
+    if (!isTestEnv()) console.time(label);
+    try {
+      await doc.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { PK: "WHATSAPP#INVITELINKS", SK: sortKey },
+          UpdateExpression: "SET Clicks = if_not_exists(Clicks, :zero) + :inc",
+          ExpressionAttributeValues: { ":inc": 1, ":zero": 0 },
+        })
+      );
+    } catch (err) {
+      console.error(`Error incrementing Clicks for ${sortKey}:`, err);
+    } finally {
+      if (!isTestEnv()) console.timeEnd(label);
+    }
+    // ------------------------------------------------------------
 
     console.timeEnd("[database] getInviteCode total");
     return { inviteCode, sortKey };
